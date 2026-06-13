@@ -1,0 +1,32 @@
+# Maven
+target/
+*.class
+
+# Build output
+build/
+out/
+
+# JMH results (regenerate locally)
+jmh-results.csv
+*.json
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated demo images (test outputs)
+*_Grayscale.png
+*_GaussianBlur5x5.png
+*_Sobel3x3.png
+
+# Speedup charts (report assets — keep these)
+!speedup_*.png
