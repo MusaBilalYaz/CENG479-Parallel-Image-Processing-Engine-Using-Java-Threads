@@ -1,7 +1,6 @@
 # Maven
 target/
 *.class
-dependency-reduced-pom.xml
 
 # Build output
 build/
