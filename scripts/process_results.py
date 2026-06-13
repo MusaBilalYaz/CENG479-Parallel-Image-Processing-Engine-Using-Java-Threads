@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-process_results.py — Turn raw JMH CSV output into speedup tables and graphs.
+process_results.py — Turn raw JMH CSV output into speedup, efficiency and
+throughput tables/graphs.
 
 Usage:
-    python3 scripts/process_results.py jmh-results.csv
+    python scripts/process_results.py jmh-results.csv
+
+Expected JMH parameters:
+    Param: imageCase   examples: 512x512, 1024x1024, 2048x2048, 3840x2160
+    Param: threads     examples: 1, 2, 4, 8, 16
+    Param: filterName  examples: Grayscale, GaussianBlur5x5, Sobel3x3
+
+Backward compatibility:
+    If the CSV contains Param: size instead of Param: imageCase, the script
+    treats it as a square image: size x size.
 
 Outputs:
-    - Prints a tidy speedup table to the console
-    - Writes speedup_table.csv
-    - Writes speedup_<filter>.png charts (if matplotlib is installed)
-
-The speedup for a given (size, filter, threads) is:
-    speedup = sequential_time(size, filter) / parallel_time(size, filter, threads)
-
-JMH's CSV columns of interest:
-    "Benchmark"          e.g. com...FilterBenchmark.executorParallel
-    "Score"              the measured average time (ms/op)
-    "Param: size"
-    "Param: threads"
-    "Param: filterName"
+    speedup_table.csv
+    speedup_<FilterName>.png
+    efficiency_<FilterName>.png
+    speedup_combined_4k_executor.png
+    efficiency_combined_4k_executor.png
 """
 
 import csv
@@ -28,7 +30,7 @@ from collections import defaultdict
 
 def load_rows(path):
     rows = []
-    with open(path, newline="") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for r in reader:
             rows.append(r)
@@ -40,13 +42,56 @@ def col(row, *candidates):
     for c in candidates:
         for key in row:
             if key.strip().strip('"').lower() == c.lower():
-                return row[key].strip().strip('"')
+                value = row[key]
+                if value is None:
+                    return None
+                return value.strip().strip('"')
     return None
 
 
 def short_method(benchmark):
-    # com.ceng479.imaging.benchmark.FilterBenchmark.executorParallel -> executorParallel
+    """
+    Example:
+    com.ceng479.imaging.benchmark.FilterBenchmark.executorParallel
+    -> executorParallel
+    """
     return benchmark.split(".")[-1]
+
+
+def parse_image_case(value):
+    """
+    Converts '3840x2160' into ('3840x2160', 3840, 2160).
+    Also accepts uppercase X and whitespace.
+    """
+    if value is None:
+        raise ValueError("imageCase is missing")
+
+    normalized = value.lower().replace(" ", "")
+    parts = normalized.split("x")
+
+    if len(parts) != 2:
+        raise ValueError(f"Invalid imageCase: {value}")
+
+    width = int(parts[0])
+    height = int(parts[1])
+    label = f"{width}x{height}"
+    return label, width, height
+
+
+def image_area(image_label):
+    width, height = map(int, image_label.split("x"))
+    return width * height
+
+
+def image_sort_key(image_label):
+    width, height = map(int, image_label.split("x"))
+    return (width * height, width, height)
+
+
+def safe_round(value, digits):
+    if value is None:
+        return ""
+    return round(value, digits)
 
 
 def main():
@@ -56,114 +101,180 @@ def main():
 
     path = sys.argv[1]
     rows = load_rows(path)
+
     if not rows:
         print("No rows found in", path)
         sys.exit(1)
 
-    # data[(size, filter)][method][threads] = score
+    # data[(image_label, filterName)][method][threads] = score_ms
     data = defaultdict(lambda: defaultdict(dict))
 
     for r in rows:
         bench = col(r, "Benchmark")
         score = col(r, "Score")
-        size = col(r, "Param: size", "size")
         threads = col(r, "Param: threads", "threads")
         fname = col(r, "Param: filterName", "filterName")
-        if bench is None or score is None:
+
+        # Preferred proposal-aligned parameter.
+        image_case_value = col(r, "Param: imageCase", "imageCase")
+
+        # Backward compatibility for older benchmark code.
+        size_value = col(r, "Param: size", "size")
+
+        if bench is None or score is None or threads is None or fname is None:
             continue
+
         method = short_method(bench)
+
         try:
-            score = float(score.replace(",", "."))
-            size_i = int(size)
+            score_ms = float(score.replace(",", "."))
             threads_i = int(threads)
+
+            if image_case_value:
+                image_label, width, height = parse_image_case(image_case_value)
+            elif size_value:
+                size_i = int(size_value)
+                width = size_i
+                height = size_i
+                image_label = f"{width}x{height}"
+            else:
+                continue
+
         except (TypeError, ValueError):
             continue
-        data[(size_i, fname)][method][threads_i] = score
 
-    # Build speedup table
-    out_rows = []
+        data[(image_label, fname)][method][threads_i] = score_ms
+
+    if not data:
+        print("No usable benchmark rows found. Check CSV parameter names.")
+        sys.exit(1)
+
+    # ---------------------------------------------------------------------
+    # Build speedup / efficiency / throughput table
+    # ---------------------------------------------------------------------
+
     header = [
-        "size", "filter", "threads",
-        "sequential_ms", "executor_ms", "forkjoin_ms",
-        "executor_speedup", "forkjoin_speedup",
-        "executor_efficiency", "forkjoin_efficiency"
+        "image",
+        "filter",
+        "threads",
+        "sequential_ms",
+        "executor_ms",
+        "forkjoin_ms",
+        "executor_speedup",
+        "forkjoin_speedup",
+        "executor_efficiency",
+        "forkjoin_efficiency",
+        "executor_throughput_mpixels_per_sec",
+        "forkjoin_throughput_mpixels_per_sec",
     ]
-    print("\n" + "  ".join(f"{h:>16}" for h in header))
-    print("-" * (18 * len(header)))
 
-    for (size, fname) in sorted(data.keys(), key=lambda k: (k[0], str(k[1]))):
-        methods = data[(size, fname)]
-        # sequential baseline: use threads=1 sequential score (sequential ignores threads,
-        # so any threads key works; prefer 1)
+    out_rows = []
+
+    print("\n" + " ".join(f"{h:>22}" for h in header))
+    print("-" * (24 * len(header)))
+
+    for (image_label, fname) in sorted(data.keys(), key=lambda k: (image_sort_key(k[0]), str(k[1]))):
+        methods = data[(image_label, fname)]
+
         seq_scores = methods.get("sequential", {})
         if not seq_scores:
             continue
+
+        # Sequential ignores the thread parameter; prefer threads=1 if present.
         seq_ms = seq_scores.get(1, next(iter(seq_scores.values())))
 
-        for threads in sorted(set(
-                list(methods.get("executorParallel", {}).keys())
-                + list(methods.get("forkJoinParallel", {}).keys()))):
+        all_threads = sorted(
+            set(methods.get("executorParallel", {}).keys())
+            | set(methods.get("forkJoinParallel", {}).keys())
+        )
+
+        pixels = image_area(image_label)
+        megapixels = pixels / 1_000_000.0
+
+        for threads in all_threads:
             exec_ms = methods.get("executorParallel", {}).get(threads)
             fj_ms = methods.get("forkJoinParallel", {}).get(threads)
+
             exec_sp = (seq_ms / exec_ms) if exec_ms else None
             fj_sp = (seq_ms / fj_ms) if fj_ms else None
+
             exec_eff = (exec_sp / threads) if exec_sp else None
             fj_eff = (fj_sp / threads) if fj_sp else None
 
-            row = [
-                size, fname, threads,
-                round(seq_ms, 3),
-                round(exec_ms, 3) if exec_ms else "",
-                round(fj_ms, 3) if fj_ms else "",
-                round(exec_sp, 2) if exec_sp else "",
-                round(fj_sp, 2) if fj_sp else "",
-                round(exec_eff, 2) if exec_eff else "",
-                round(fj_eff, 2) if fj_eff else ""
-            ]
-            out_rows.append(row)
-            print("  ".join(f"{str(v):>16}" for v in row))
+            exec_tp = (megapixels / (exec_ms / 1000.0)) if exec_ms else None
+            fj_tp = (megapixels / (fj_ms / 1000.0)) if fj_ms else None
 
-    # Write tidy CSV
-    with open("speedup_table.csv", "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header)
-        w.writerows(out_rows)
+            row = [
+                image_label,
+                fname,
+                threads,
+                safe_round(seq_ms, 3),
+                safe_round(exec_ms, 3),
+                safe_round(fj_ms, 3),
+                safe_round(exec_sp, 2),
+                safe_round(fj_sp, 2),
+                safe_round(exec_eff, 2),
+                safe_round(fj_eff, 2),
+                safe_round(exec_tp, 2),
+                safe_round(fj_tp, 2),
+            ]
+
+            out_rows.append(row)
+            print(" ".join(f"{str(v):>22}" for v in row))
+
+    with open("speedup_table.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(out_rows)
+
     print("\nWrote speedup_table.csv")
 
+    # ---------------------------------------------------------------------
     # Optional charts
+    # ---------------------------------------------------------------------
+
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         filters = sorted({fname for (_, fname) in data.keys()})
-        colors = ["tab:blue", "tab:orange", "tab:green"]
+        images = sorted({image for (image, _) in data.keys()}, key=image_sort_key)
+        largest_image = images[-1]
 
-        # Per-filter: Executor vs ForkJoin, largest image only (2048)
+        # Per-filter speedup charts: ExecutorService vs ForkJoinPool
         for fname in filters:
             fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
             fig.suptitle(f"Speedup vs Threads — {fname}", fontsize=13)
-            sizes = sorted({size for (size, fn) in data.keys() if fn == fname})
 
             for ax, (method_key, method_label) in zip(
-                    axes,
-                    [("executorParallel", "ExecutorService"), ("forkJoinParallel", "ForkJoinPool")]):
-                for size, color in zip(sizes, colors):
-                    methods = data[(size, fname)]
+                axes,
+                [
+                    ("executorParallel", "ExecutorService"),
+                    ("forkJoinParallel", "ForkJoinPool"),
+                ],
+            ):
+                for image_label in images:
+                    methods = data.get((image_label, fname), {})
                     seq_scores = methods.get("sequential", {})
+
                     if not seq_scores:
                         continue
+
                     seq_ms = seq_scores.get(1, next(iter(seq_scores.values())))
                     threads_sorted = sorted(methods.get(method_key, {}).keys())
+
                     if not threads_sorted:
                         continue
+
                     speedups = [seq_ms / methods[method_key][t] for t in threads_sorted]
-                    ax.plot(threads_sorted, speedups, marker="o", color=color,
-                            label=f"{size}x{size}")
-                ax.plot([1, 8], [1, 8], "k--", alpha=0.35, label="ideal")
+                    ax.plot(threads_sorted, speedups, marker="o", label=image_label)
+
+                ax.plot([1, 16], [1, 16], "k--", alpha=0.35, label="ideal")
                 ax.set_title(method_label)
                 ax.set_xlabel("Thread count")
-                ax.set_ylabel("Speedup (T_seq / T_par)")
+                ax.set_ylabel("Speedup (T_seq / T_parallel)")
                 ax.legend(fontsize=8)
                 ax.grid(True, alpha=0.3)
 
@@ -173,34 +284,131 @@ def main():
             plt.close()
             print("Wrote", out)
 
-        # Combined: all filters on one chart (2048x2048, Executor)
-        plt.figure(figsize=(7, 5))
-        filter_colors = {"GaussianBlur5x5": "tab:red", "Sobel3x3": "tab:blue", "Grayscale": "tab:green"}
+        # Per-filter efficiency charts: ExecutorService vs ForkJoinPool
         for fname in filters:
-            methods = data.get((2048, fname), {})
+            fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
+            fig.suptitle(f"Efficiency vs Threads — {fname}", fontsize=13)
+
+            for ax, (method_key, method_label) in zip(
+                axes,
+                [
+                    ("executorParallel", "ExecutorService"),
+                    ("forkJoinParallel", "ForkJoinPool"),
+                ],
+            ):
+                for image_label in images:
+                    methods = data.get((image_label, fname), {})
+                    seq_scores = methods.get("sequential", {})
+
+                    if not seq_scores:
+                        continue
+
+                    seq_ms = seq_scores.get(1, next(iter(seq_scores.values())))
+                    threads_sorted = sorted(methods.get(method_key, {}).keys())
+
+                    if not threads_sorted:
+                        continue
+
+                    efficiencies = [
+                        (seq_ms / methods[method_key][t]) / t for t in threads_sorted
+                    ]
+                    ax.plot(threads_sorted, efficiencies, marker="o", label=image_label)
+
+                ax.axhline(1.0, color="k", linestyle="--", alpha=0.35, label="ideal")
+                ax.set_title(method_label)
+                ax.set_xlabel("Thread count")
+                ax.set_ylabel("Efficiency (Speedup / Threads)")
+                ax.legend(fontsize=8)
+                ax.grid(True, alpha=0.3)
+
+            plt.tight_layout()
+            out = f"efficiency_{fname}.png"
+            plt.savefig(out, dpi=120, bbox_inches="tight")
+            plt.close()
+            print("Wrote", out)
+
+        # Combined speedup chart: all filters on the largest image, ExecutorService
+        plt.figure(figsize=(8, 5))
+        filter_colors = {
+            "GaussianBlur5x5": "tab:red",
+            "Sobel3x3": "tab:blue",
+            "Grayscale": "tab:green",
+        }
+
+        for fname in filters:
+            methods = data.get((largest_image, fname), {})
             seq_scores = methods.get("sequential", {})
+
             if not seq_scores:
                 continue
+
             seq_ms = seq_scores.get(1, next(iter(seq_scores.values())))
             threads_sorted = sorted(methods.get("executorParallel", {}).keys())
+
             if not threads_sorted:
                 continue
+
             speedups = [seq_ms / methods["executorParallel"][t] for t in threads_sorted]
-            plt.plot(threads_sorted, speedups, marker="o",
-                     color=filter_colors.get(fname, "gray"), label=fname)
-        plt.plot([1, 8], [1, 8], "k--", alpha=0.35, label="ideal (linear)")
-        plt.title("Speedup vs Threads — All Filters (2048×2048, Executor)")
+            plt.plot(
+                threads_sorted,
+                speedups,
+                marker="o",
+                color=filter_colors.get(fname, None),
+                label=fname,
+            )
+
+        plt.plot([1, 16], [1, 16], "k--", alpha=0.35, label="ideal (linear)")
+        plt.title(f"Speedup vs Threads — All Filters ({largest_image}, Executor)")
         plt.xlabel("Thread count")
-        plt.ylabel("Speedup (T_seq / T_par)")
+        plt.ylabel("Speedup (T_seq / T_parallel)")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        out = "speedup_combined.png"
+        out = "speedup_combined_4k_executor.png"
         plt.savefig(out, dpi=120, bbox_inches="tight")
         plt.close()
         print("Wrote", out)
+
+        # Combined efficiency chart: all filters on the largest image, ExecutorService
+        plt.figure(figsize=(8, 5))
+
+        for fname in filters:
+            methods = data.get((largest_image, fname), {})
+            seq_scores = methods.get("sequential", {})
+
+            if not seq_scores:
+                continue
+
+            seq_ms = seq_scores.get(1, next(iter(seq_scores.values())))
+            threads_sorted = sorted(methods.get("executorParallel", {}).keys())
+
+            if not threads_sorted:
+                continue
+
+            efficiencies = [
+                (seq_ms / methods["executorParallel"][t]) / t for t in threads_sorted
+            ]
+            plt.plot(
+                threads_sorted,
+                efficiencies,
+                marker="o",
+                color=filter_colors.get(fname, None),
+                label=fname,
+            )
+
+        plt.axhline(1.0, color="k", linestyle="--", alpha=0.35, label="ideal")
+        plt.title(f"Efficiency vs Threads — All Filters ({largest_image}, Executor)")
+        plt.xlabel("Thread count")
+        plt.ylabel("Efficiency (Speedup / Threads)")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        out = "efficiency_combined_4k_executor.png"
+        plt.savefig(out, dpi=120, bbox_inches="tight")
+        plt.close()
+        print("Wrote", out)
+
     except ImportError:
-        print("\n(matplotlib not installed — skipping charts. "
-              "Install with: pip install matplotlib)")
+        print("\nmatplotlib is not installed — skipping charts.")
+        print("Install with: pip install matplotlib")
 
 
 if __name__ == "__main__":
