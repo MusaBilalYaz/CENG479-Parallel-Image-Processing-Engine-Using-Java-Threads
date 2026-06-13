@@ -19,14 +19,12 @@
     </properties>
 
     <dependencies>
-        <!-- JMH runtime -->
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-core</artifactId>
             <version>${jmh.version}</version>
         </dependency>
 
-        <!-- JMH annotation processor -->
         <dependency>
             <groupId>org.openjdk.jmh</groupId>
             <artifactId>jmh-generator-annprocess</artifactId>
@@ -44,6 +42,10 @@
                 <version>3.11.0</version>
                 <configuration>
                     <release>${maven.compiler.release}</release>
+
+                    <!-- Force Maven to use javac instead of any IDE/Eclipse compiler behavior -->
+                    <compilerId>javac</compilerId>
+                    <forceJavacCompilerUse>true</forceJavacCompilerUse>
 
                     <annotationProcessorPaths>
                         <path>
@@ -67,9 +69,7 @@
                             <goal>shade</goal>
                         </goals>
                         <configuration>
-                            <!-- Do not generate dependency-reduced-pom.xml -->
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-
                             <finalName>image-processing</finalName>
 
                             <transformers>
