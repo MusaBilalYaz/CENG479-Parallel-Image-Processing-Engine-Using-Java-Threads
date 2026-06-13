@@ -1,5 +1,22 @@
 package com.ceng479.imaging.benchmark;
 
+import java.util.concurrent.TimeUnit;
+
+import org.openjdk.jmh.annotations.Benchmark;
+import org.openjdk.jmh.annotations.BenchmarkMode;
+import org.openjdk.jmh.annotations.Fork;
+import org.openjdk.jmh.annotations.Level;
+import org.openjdk.jmh.annotations.Measurement;
+import org.openjdk.jmh.annotations.Mode;
+import org.openjdk.jmh.annotations.OutputTimeUnit;
+import org.openjdk.jmh.annotations.Param;
+import org.openjdk.jmh.annotations.Scope;
+import org.openjdk.jmh.annotations.Setup;
+import org.openjdk.jmh.annotations.State;
+import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Warmup;
+import org.openjdk.jmh.infra.Blackhole;
+
 import com.ceng479.imaging.core.Filter;
 import com.ceng479.imaging.filters.GaussianBlurFilter;
 import com.ceng479.imaging.filters.GrayscaleFilter;
@@ -9,10 +26,6 @@ import com.ceng479.imaging.parallel.ForkJoinParallelProcessor;
 import com.ceng479.imaging.sequential.SequentialProcessor;
 import com.ceng479.imaging.util.ImageIOUtils;
 import com.ceng479.imaging.util.ImageIOUtils.ImageData;
-import org.openjdk.jmh.annotations.*;
-import org.openjdk.jmh.infra.Blackhole;
-
-import java.util.concurrent.TimeUnit;
 
 /**
  * JMH microbenchmark comparing the sequential baseline against the two parallel
@@ -35,12 +48,12 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 1)
 public class FilterBenchmark {
 
-    /** Image edge length; produces a square image of size x size pixels. */
-    @Param({"512", "1024", "2048"})
-    public int size;
+    /** Image case; includes square images and the proposal's 4K UHD size. */
+    @Param({"512x512", "1024x1024", "2048x2048", "3840x2160"})
+    public String imageCase;
 
     /** Worker thread count for the parallel implementations. */
-    @Param({"1", "2", "4", "8"})
+    @Param({"1", "2", "4", "8", "16"})
     public int threads;
 
     /** Which filter to apply. */
@@ -58,8 +71,10 @@ public class FilterBenchmark {
 
     @Setup(Level.Trial)
     public void setup() {
-        width = size;
-        height = size;
+        String[] parts = imageCase.toLowerCase().split("x");
+        width = Integer.parseInt(parts[0]);
+        height = Integer.parseInt(parts[1]);
+
         ImageData img = ImageIOUtils.generateSynthetic(width, height, 42L);
         src = img.pixels;
         filter = resolveFilter(filterName);
