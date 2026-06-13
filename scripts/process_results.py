@@ -24,6 +24,7 @@ Outputs:
 """
 
 import csv
+import os
 import sys
 from collections import defaultdict
 
@@ -100,6 +101,13 @@ def main():
         sys.exit(1)
 
     path = sys.argv[1]
+    benchmark_dir = os.path.join("outputs", "benchmark")
+    speedup_dir = os.path.join("outputs", "speedup")
+    efficiency_dir = os.path.join("outputs", "efficiency")
+
+    os.makedirs(benchmark_dir, exist_ok=True)
+    os.makedirs(speedup_dir, exist_ok=True)
+    os.makedirs(efficiency_dir, exist_ok=True)
     rows = load_rows(path)
 
     if not rows:
@@ -222,12 +230,14 @@ def main():
             out_rows.append(row)
             print(" ".join(f"{str(v):>22}" for v in row))
 
-    with open("speedup_table.csv", "w", newline="", encoding="utf-8") as f:
+    speedup_table_path = os.path.join(benchmark_dir, "speedup_table.csv")
+
+    with open(speedup_table_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(out_rows)
 
-    print("\nWrote speedup_table.csv")
+    print(f"\nWrote {speedup_table_path}")
 
     # ---------------------------------------------------------------------
     # Optional charts
@@ -279,7 +289,7 @@ def main():
                 ax.grid(True, alpha=0.3)
 
             plt.tight_layout()
-            out = f"speedup_{fname}.png"
+            out = os.path.join(speedup_dir, f"speedup_{fname}.png")
             plt.savefig(out, dpi=120, bbox_inches="tight")
             plt.close()
             print("Wrote", out)
@@ -322,7 +332,7 @@ def main():
                 ax.grid(True, alpha=0.3)
 
             plt.tight_layout()
-            out = f"efficiency_{fname}.png"
+            out = os.path.join(efficiency_dir, f"efficiency_{fname}.png")
             plt.savefig(out, dpi=120, bbox_inches="tight")
             plt.close()
             print("Wrote", out)
@@ -363,7 +373,7 @@ def main():
         plt.ylabel("Speedup (T_seq / T_parallel)")
         plt.legend()
         plt.grid(True, alpha=0.3)
-        out = "speedup_combined_4k_executor.png"
+        out = os.path.join(speedup_dir, "speedup_combined_4k_executor.png")
         plt.savefig(out, dpi=120, bbox_inches="tight")
         plt.close()
         print("Wrote", out)

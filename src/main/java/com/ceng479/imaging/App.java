@@ -1,5 +1,8 @@
 package com.ceng479.imaging;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import com.ceng479.imaging.core.Filter;
 import com.ceng479.imaging.filters.GaussianBlurFilter;
 import com.ceng479.imaging.filters.GrayscaleFilter;
@@ -20,7 +23,7 @@ import com.ceng479.imaging.util.ImageIOUtils.ImageData;
  *                              synthetic 2048x2048 image for all three filters.
  *
  *   demo &lt;inputImage&gt;          Apply all three filters to a real image and save
- *                              the outputs as PNG files next to it.
+ *                              the outputs under outputs/demo/.
  *
  *   time &lt;w&gt; &lt;h&gt; &lt;threads&gt;     Quick sequential-vs-parallel timing on a synthetic
  *                              image of the given size. NOTE: for rigorous
@@ -85,7 +88,7 @@ public final class App {
 
         System.out.println();
         System.out.println("Correctness verified. For rigorous speedup numbers, run the JMH benchmark:");
-        System.out.println("  java -jar target/image-processing.jar   (then see BenchmarkRunner)");
+        System.out.println("  java -cp target/image-processing.jar com.ceng479.imaging.benchmark.BenchmarkRunner");
         System.out.println("  or: mvn exec:java -Dexec.mainClass=com.ceng479.imaging.benchmark.BenchmarkRunner");
     }
 
@@ -95,16 +98,37 @@ public final class App {
         System.out.printf("Loaded %dx%d image.%n", img.width, img.height);
 
         int threads = Runtime.getRuntime().availableProcessors();
-        String base = inputPath.replaceAll("\\.[^.]+$", "");
+
+        Path outputDir = Path.of("outputs", "demo");
+        Files.createDirectories(outputDir);
+
+        Path inputFile = Path.of(inputPath);
+        String fileName = inputFile.getFileName().toString();
+        String baseName = removeExtension(fileName);
 
         try (ExecutorParallelProcessor exec = new ExecutorParallelProcessor(threads)) {
             for (Filter filter : FILTERS) {
                 int[] out = exec.process(img.pixels, img.width, img.height, filter);
-                String outPath = base + "_" + filter.name() + ".png";
-                ImageIOUtils.savePng(out, img.width, img.height, outPath);
-                System.out.println("  Saved " + outPath);
+
+                Path outputPath = outputDir.resolve(baseName + "_" + filter.name() + ".png");
+                ImageIOUtils.savePng(out, img.width, img.height, outputPath.toString());
+
+                System.out.println("  Saved " + outputPath);
             }
         }
+
+        System.out.println();
+        System.out.println("Demo outputs written under: " + outputDir);
+    }
+
+    private static String removeExtension(String fileName) {
+        int dotIndex = fileName.lastIndexOf('.');
+
+        if (dotIndex <= 0) {
+            return fileName;
+        }
+
+        return fileName.substring(0, dotIndex);
     }
 
     private static void runTiming(int w, int h, int threads) {
@@ -130,7 +154,10 @@ public final class App {
                 int[] parOut = exec.process(img.pixels, w, h, filter);
                 parMs = (System.nanoTime() - t1) / 1_000_000;
                 boolean ok = CorrectnessVerifier.identical(seqOut, parOut);
-                if (!ok) System.out.println("  WARNING: parallel output differs!");
+
+                if (!ok) {
+                    System.out.println("  WARNING: parallel output differs!");
+                }
             }
 
             double speedup = parMs == 0 ? 0 : (double) seqMs / parMs;
@@ -141,8 +168,8 @@ public final class App {
 
     private static void printUsage() {
         System.out.println("Usage:");
-        System.out.println("  java -jar image-processing.jar                 # correctness + demo");
-        System.out.println("  java -jar image-processing.jar demo <image>    # filter a real image");
+        System.out.println("  java -jar image-processing.jar                         # correctness + demo");
+        System.out.println("  java -jar image-processing.jar demo <image>            # filter a real image");
         System.out.println("  java -jar image-processing.jar time <w> <h> <threads>  # rough timing");
     }
 }
