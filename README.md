@@ -152,9 +152,9 @@ java -jar target/image-processing.jar demo path/to/photo.jpg
 Example output files:
 
 ```text
-photo_Grayscale.png
-photo_GaussianBlur5x5.png
-photo_Sobel3x3.png
+outputs/demo/test1_Grayscale.png
+outputs/demo/test1_GaussianBlur5x5.png
+outputs/demo/test1_Sobel3x3.png
 ```
 
 This mode is mainly for visual demonstration. It shows that the filters are actually applied
@@ -187,7 +187,7 @@ java -cp target/image-processing.jar com.ceng479.imaging.benchmark.BenchmarkRunn
 The benchmark writes raw results to:
 
 ```text
-jmh-results.csv
+outputs/benchmark/jmh-results.csv
 ```
 
 The proposal-aligned benchmark sweep is:
